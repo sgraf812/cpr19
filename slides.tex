@@ -96,6 +96,7 @@
         \begin{haskell}
           fac :: Int -> Int
           fac (I# n) = I# (facw n)
+          facw :: Int# -> Int#
           facw n = case n of
             1# -> 1#
             _  -> n *# facw (n -# 1#)
