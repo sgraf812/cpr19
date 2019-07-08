@@ -1,7 +1,8 @@
 \documentclass{haskellbeamer}
 
-\title{Selective Lambda Lifting}
-\date{24 June 2019}
+\title{Nested CPR}
+\subtitle{How to Keep an MR Intern Busy}
+\date{8 July 2019}
 
 \bibliography{bibliography.bib}
 \input{defs.tex}
@@ -73,422 +74,321 @@
 
 \maketitle
 
-\begin{frame}[fragile]{Motivation}
+\begin{frame}[fragile]{CPR -- Motivation}
   \begin{center}
     \begin{minipage}{0.7\textwidth}
       \begin{overprint}
         \onslide<1>
         \begin{haskell}
-          f a 0 = a
-          f a n = f (g (n `mod` 2)) (n-1)
-            where
-              g 0 = a
-              g n = 1 + g (n-1)
+          fac :: Int -> Int
+          fac 1 = 1
+          fac n = n * fac (n-1) 
         \end{haskell}
         \onslide<2>
         \begin{haskell}
-          f a 0 = a
-          f a n = f (g' a (n `mod` 2)) (n-1)
-
-          g' a 0 = a
-          g' a n = 1 + g' a (n-1)
+          fac :: Int -> Int
+          fac (I# n) = case n of
+            1# -> I# 1#
+            _  -> case fac (I# (n -# 1#)) of
+              I# m -> I# (n *# m)
         \end{haskell}
         \onslide<3>
         \begin{haskell}
-f :: [Int] -> [Int] -> Int -> Int
-f a b 0 = a
-f a b 1 = b
-f a b n = f (g n) a (n `mod` 2)
-  where
-    g 0 = a
-    g 1 = b
-    g n = n : h
-      where
-        h = g (n-1)
+          fac :: Int -> Int
         \end{haskell}
-        \onslide<4>
-        \begin{haskell}
-f :: [Int] -> [Int] -> Int -> Int
-f a b 0 = a
-f a b 1 = b
-f a b n = f (g' a b n) a (n `mod` 2)
-
-g' a b 0 = a
-g' a b 1 = b
-g' a b n = n : h
-  where
-    h = g' a b (n-1)
-        \end{haskell}
-
       \end{overprint}
     \end{minipage}
   \end{center}
 \end{frame}
 
-\begin{frame}[fragile]{Closure Conversion vs. Lambda Lifting}
-  \begin{itemize}
-    \item Codegen strategies: turn local functions into global functions and auxiliary heap allocations
-    \item Closure Conversion: References to free variables lowered as fields accesses on a closure record containing all FVs
-    \item Lambda Lifting: Convert free variables into parameters, supplied as additional arguments at call sites
-  \end{itemize}
+\begin{frame}[fragile]{Worker/Wrapper Transformation}
+  \begin{center}
+    \begin{minipage}{0.7\textwidth}
+      \begin{overprint}
+        \onslide<1>
+        \begin{haskell}
+          f x = <e>
+        \end{haskell}
+        \hspace{0.1\textwidth}$\Big\Downarrow$
+        \begin{haskell}
+          f x = case fw x of
+            (# a, b ... #) -> C a b ...
+          fw x = case <e> of
+            C a b ... -> (# a, b, ... #)
+        \end{haskell}
+        \onslide<2>
+        \begin{haskell}
+          fac (I# n) = case n of
+            1# -> I# 1#
+            _  -> case fac (I# (n -# 1#)) of
+              I# m -> I# (n *# m)
+        \end{haskell}
+        \onslide<3>
+        \begin{haskell*}{escapeinside=||}
+          fac n = I# (facw n)
+          facw (I# n) = |\colorbox{red}{case}| (case n of
+            1# -> I# 1#
+            _  -> case fac (I# (n -# 1#)) of
+              I# m -> I# (n *# m)) |\colorbox{red}{of}|
+            |\colorbox{red}{I# res -> res}|
+        \end{haskell*}
+        \onslide<4>
+        \begin{haskell*}{escapeinside=||}
+          fac n = I# (facw n)
+          facw (I# n) = case n of
+            1# ->
+              |\colorbox{red}{case}| I# 1# |\colorbox{red}{of I# res -> res}|
+            _  -> case fac (I# (n -# 1#)) of
+              I# m ->  |\colorbox{red}{case}| I# (n *# m) |\colorbox{red}{of}|
+                |\colorbox{red}{I# res -> res}|
+        \end{haskell*}
+        \onslide<5>
+        \begin{haskell}
+          fac n = I# (facw n)
+          facw (I# n) = case n of
+            1# -> 1#
+            _  -> case fac (I# (n -# 1#)) of
+              I# m -> (n *# m)
+        \end{haskell}
+        \onslide<6>
+        \begin{haskell}
+          fac n = I# (facw n)
+          facw (I# n) = case n of
+            1# -> 1#
+            _  -> facw (I# (n -# 1#))
+        \end{haskell}
+        \onslide<7>
+        \begin{haskell}
+          fac (I# n) = I# (facw n)
+          facw n = case n of
+            1# -> 1#
+            _  -> facw (n -# 1#)
+        \end{haskell}
+      \end{overprint}
+    \end{minipage}
+  \end{center}
+\end{frame}
+
+\begin{frame}[fragile]{When is this beneficial?}
   \begin{center}
     \begin{overprint}
-      \begin{minipage}{0.45\textwidth}
-        \begin{haskell}
-          let f = \a b -> a*x+b*y
-          in f 4 2
-        \end{haskell}
-      \end{minipage}%
-      \begin{minipage}{0.1\textwidth}
-        $\xRightarrow{\text{\only<1>{CC}\only<2>{LL} }\idf}$
-      \end{minipage}%
       \onslide<1>
-      \begin{minipage}{0.45\textwidth}
-        \begin{haskell}
-          data EnvF = EnvF
-            { x :: Int
-            , y :: Int }
-          f' env a b =
-            a*x env + b*y env;
-          let f = (f', EnvF x y)
-          in (fst f) (snd f) 4 2
-        \end{haskell}
-      \end{minipage}
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval (Add l r) = eval l + eval r
+        eval (Lit n) = n
+      \end{haskell}
       \onslide<2>
-      \begin{minipage}{0.45\textwidth}
-        \begin{haskell*}{stripnl=false}
-          
-
-
-          f' x y a b = a*x + b*y;
-          f' x y 4 2
-        \end{haskell*}
-      \end{minipage}
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval e = Int# (evalw e)
+        evalw (Add l r) = evalw l +# evalw r
+        evalw (Lit n) = case n of I# n' -> n'
+      \end{haskell}
+      \onslide<3>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval e = Int# (evalw e)
+        evalw (Add l r) = evalw l +# evalw r
+        evalw (Lit n) = case n of I# n' -> n'
+        
+        sum $ map (eval . Lit) [1..1000000]
+      \end{haskell}
     \end{overprint}
   \end{center}
 \end{frame}
 
-\begin{frame}[fragile]{When to lift?}
+\begin{frame}[fragile]{Nested CPR -- Motivation}
   \begin{center}
-    \begin{minipage}{0.45\textwidth}
-      \onslide<2->
-      When \emph{not} to lift?
-      \begin{itemize}
-        \item<3-> Argument occurrences
-        \item<6-> Closure growth
-        \item<8-> Calling convention
-        \item<10-> Known calls to FVs
-        \item<12-> Sharing
-      \end{itemize}
-    \end{minipage}%
-    \begin{minipage}{0.55\textwidth}
+    \begin{minipage}{0.7\textwidth}
       \begin{overprint}
-        \onslide<3-5>
+        \onslide<1>
         \begin{haskell}
-          let f = \a b c -> a*x + b*y + z
-          in g 5 x f
+          facIO :: Int -> IO Int
+          facIO 1 = pure 1
+          facIO n = do
+            m <- facIO (n-1)
+            pure (n * m)
         \end{haskell}
-        \onslide<6-7>
+        \onslide<2>
         \begin{haskell}
-          let f = \a b -> a*x + b*y
-              g = \d -> f d d + x
-          in g 5
+          facIO :: Int -> World -> (World, Int)
+          facIO 1 s = (s, 1)
+          facIO n s =
+            let (s', m) = facIO (n-1) s in
+            (s', n * m)
         \end{haskell}
-        \onslide<8-9>
-        \begin{haskell}
-          let f = \a b c d -> a*b*c*d*x*y*z
-          in f 1 2 3 4
-        \end{haskell}
-        \onslide<10-11>
-        \begin{haskell}
-          let f = \x -> 2*x
-              mapF = \xs -> case xs of
-                []    -> []
-                x:xs' -> f x : mapF xs'
-          in mapF [1..n]
-        \end{haskell}
-        \onslide<12-13>
-        \begin{haskell}
-          let p = (,) x y
-          in fst p + snd p
-        \end{haskell}
-      \end{overprint}
-      \begin{overprint}
+        \onslide<3>
+        \begin{haskell*}{escapeinside=||}
+          facIO :: Int -> World -> (World, Int)
+          facIO (I# n) s = case facIOw n s of
+            (# s, n #) -> (s, n)
+          facIOw  :: Int# -> World -> (# World, |\colorbox{red}{Int}| #)
+          facIOw  1# s = (# s, 1 #)
+          facIOw  n s = case facIOw (n -# 1#) s of
+            (# s', m #) -> (# s', I# n * m #)
+        \end{haskell*}
         \onslide<4>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' a b c = a*x + b*y + z;
-          g 5 x (f' x y)
-        \end{haskell}
+        \begin{haskell*}{escapeinside=||}
+          facIO :: Int -> World -> (World, Int)
+          facIO (I# n) s = case facIOw n s of
+            (# s, n #) -> (s, n)
+          facIOw  :: Int# -> World -> (# World, |\colorbox{red}{Int}| #)
+          facIOw  1# s = (# s, I# 1 #)
+          facIOw  n s = case facIOw (n -# 1#) s of
+            (# s', I# m #) -> (# s', I# (n *# m) #)
+        \end{haskell*}
         \onslide<5>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
         \begin{haskell}
-          f' a b c = a*x + b*y + z;
-          let f = f' x y
-          in g 5 x f
-        \end{haskell}
-        \onslide<7>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' x y a b = a*x + b*y;
-          let g = \d -> f x y d d + x
-          in g 5
-        \end{haskell}
-        \onslide<9>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' x y z a b c d = a*b*c*d*x*y*z;
-          f' x y z 1 2 3 4
-        \end{haskell}
-        \onslide<11>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\id{mapF}$
-        \begin{haskell}
-          mapF' f []      = [];
-          mapF' f (x:xs') = f x : mapF' f xs';
-          let f = \x -> 2*x
-          in mapF' f [1..n]
-        \end{haskell}
-        \onslide<13>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\id{p}$
-        \begin{haskell}
-          p x y = (,) x y
-          fst (p x y) + snd (p x y)
+          facIO :: Int -> World -> (World, Int)
+          facIO (I# n) s = case facIOww n s of
+            (# s, n #) -> (s, I# n)
+          facIOww :: Int# -> World -> (# World, Int# #)
+          facIOww 1# s = (# s, 1# #)
+          facIOww n s = case facIOww (n -# 1#) s of
+            (# s', m #) -> (# s', n *# m #)
         \end{haskell}
       \end{overprint}
     \end{minipage}
   \end{center}
 \end{frame}
 
-\begin{frame}[fragile]{Estimating Closure Growth}
-  \begin{center}
-    \begin{minipage}{0.45\textwidth}
+\begin{frame}[fragile]{When to apply this?}
+    \begin{minipage}{0.39\textwidth}
+      Careful!
       \begin{itemize}
-        \item<3-> Definition minus call sites? \only<5->{\xmark}
-        \item<6-> Don't lift multi-shot occurrences? \only<7->{\xmark}
-        \item<8-> Cost model in $\mathbb{Z}_\infty$ \only<9->{\cmark}
+        \item<1-> Divergence
+        \item<4-> Speculation
       \end{itemize}
     \end{minipage}%
-    \begin{minipage}{0.55\textwidth}
-      \begin{overprint}
-        \onslide<2-3>
-        \begin{haskell}
-          let f = \a b -> a*x + b*y
-              g = \d -> f d d + x
-          in g 5
-        \end{haskell}
-        \onslide<4-6>
-        \begin{haskell}
-          let f = \a b -> a*x + b*y
-              g = \d ->
-                let h = \e -> f e e
-                in h x
-          in g 1 + g 2 + g 3
-        \end{haskell}
-        \onslide<7->
-        \begin{haskell}
-          let f = \a b -> a*x + b*y
-              g = \d ->
-                let h1 = \e -> f e e
-                    h2 = \e -> f e e+x*y
-                in h1 d + h2 d
-          in g 1 + g 2 + g 3
-        \end{haskell}
-      \end{overprint}
-      \begin{overprint}
-        \onslide<2-3>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' x y a b = a*x + b*y;
-          let g = \d -> f x y d d + x
-          in g 5
-        \end{haskell}
-        \onslide<4-6>
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' x y a b = a*x + b*y;
-          let g = \d ->
-                let h = \e -> f' x y e e
-                in h x
-          in g 1 + g 2 + g 3
-        \end{haskell}
-        \onslide<7->
-        \hspace{0.4\textwidth}$\Big\Downarrow$ LL $\idf$
-        \begin{haskell}
-          f' x y a b = a*x + b*y;
-          let g = \d ->
-                let h1 = \e -> f' x y e e
-                    h2 = \e -> f' x y e e+x*y
-                in h1 d + h2 d
-          in g 1 + g 2 + g 3
-        \end{haskell}
-      \end{overprint}
+    \begin{minipage}{0.6\textwidth}
+      \begin{center}
+        \begin{overprint}
+          \onslide<1>
+          \begin{haskell}
+            f :: Int -> (Int, Int)
+            f x = (x-1, x+1)
+          \end{haskell}
+          \onslide<2>
+          \begin{haskell}
+            f :: Int -> (Int, Int)
+            f x = (x-1, x+1)
+            
+            f' :: Int -> (Int, Int)
+            f' (I# x) = case f'w x of
+              (# a, b #) -> (I# a, I# b)
+            f'w x = (# x -# 1#, x +# 1# #)
+          \end{haskell}
+          \onslide<3>
+          \begin{haskell*}{escapeinside=||}
+            f :: Int -> (Int, Int)
+            f x = (x-1, x+1)
+            
+            f' :: Int -> (Int, Int)
+            f' (I# x) = case f'w x of
+              (# a, b #) -> (I# a, I# b)
+            f'w x = (# x -# 1#, x +# 1# #)
+
+            > f (error |\PYG{l+s}{\PYGZdq{}}\PYG{l+s}{\includegraphics[width=3.85mm]{bomb.png}}\PYG{l+s}{\PYGZdq{}}|) `seq` ()
+            ()
+            > f' (error |\PYG{l+s}{\PYGZdq{}}\PYG{l+s}{\includegraphics[width=3.85mm]{bomb.png}}\PYG{l+s}{\PYGZdq{}}|) `seq` ()
+            |\PYG{l+s}{\includegraphics[width=3.85mm]{bomb.png}}|
+          \end{haskell*}
+          \onslide<4>
+          \begin{haskell}
+            f :: Int -> (Int, Int)
+            f x = x `seq` (x-1, g x)
+
+            g :: Int -> Int
+            g n = 0
+            g n = n + g (n-1)
+          \end{haskell}
+          \onslide<5>
+          \begin{haskell*}{escapeinside=||}
+            f :: Int -> (Int, Int)
+            f x = case fw x of
+              (# a, b #) -> (I# a, I# b)
+            fw x = (# x -# 1#, gw x #)
+
+            gw :: Int# -> Int#
+            g n = 0#
+            g n = n +# g (n -# 1#)
+          \end{haskell*}
+          \onslide<6>
+          \begin{haskell*}{escapeinside=||}
+            f :: Int -> (Int, Int)
+            f x = case fw x of
+              (# a, b #) -> (I# a, I# b)
+            fw x = (# x -# 1#, gw x #)
+
+            gw :: Int# -> Int#
+            g n = 0#
+            g n = n +# g (n -# 1#)
+
+            > sum $ map (fst . f) [0..1000000]
+            |\PYG{l+s}{\includegraphics[width=3.85mm]{hourglass.pdf}}|
+          \end{haskell*}
+        \end{overprint}
+      \end{center}
     \end{minipage}
+\end{frame}
+
+\begin{frame}[fragile]{A different angle}
+  \begin{center}
+    \begin{overprint}
+      \onslide<1>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval (Add l r) = eval l + eval r
+        eval (Lit n) = n
+      \end{haskell}
+      \onslide<2>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval e = Int# (evalw e)
+        evalw (Add l r) = evalw l +# evalw r
+        evalw (Lit n) = case n of I# n' -> n'
+      \end{haskell}
+      \onslide<3>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval e = Int# (evalw e)
+        evalw (Add l r) = evalw l +# evalw r
+        evalw (Lit n) = case n of I# n' -> n'
+        
+        sum $ map (eval . Lit) [1..1000000]
+      \end{haskell}
+      \onslide<4>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval (Add l r) = eval l + eval r
+        eval (Lit n) = n
+      \end{haskell}
+      \onslide<5>
+      \begin{haskell}
+        data E = Add E E | Lit Int
+        eval (Add l r) = I# (eval_ub l #+ eval_ub r)
+        eval (Lit n) = n
+        eval_ub (Add l r) = eval_ub l #+ eval_ub r
+        eval_ub (Lit n) = case n of I# n' -> n'
+
+        sum $ map (eval . Lit) [1..1000000]
+      \end{haskell}
+      $\Longrightarrow$ \enquote{Return-pattern specialisation}
+    \end{overprint}
   \end{center}
 \end{frame}
 
-\begin{frame}[fragile]{Evaluation -- Against Baseline}
-  \begin{figure}[t]
-    \centering
-    \begin{tabular}{lrr}
-      \toprule
-      Program & \multicolumn{1}{c}{Bytes allocated} & \multicolumn{1}{c}{Runtime} \\
-      \midrule
-      \progname{cryptarithm1} & -2.8\% & -8.0\%\\
-      \progname{grep} & -6.7\% & -4.3\%\\
-      \progname{lambda} & -0.0\% & -13.5\%\\
-      \progname{mate} & -8.4\% & -3.1\%\\
-      \progname{minimax} & -1.1\% & +3.8\%\\
-      \progname{n-body} & -20.2\% & -0.0\%\\
-      \progname{queens} & -18.0\% & -0.5\%\\
-      \andmore{98} & & \\
-      \midrule
-      \totalname{Min} & -20.2\% & -13.5\%\\
-      \totalname{Max} &  0.0\% & +3.8\%\\
-      \totalname{Geometric Mean} & -0.9\% & -0.7\%\\
-      \bottomrule
-    \end{tabular}
-    \caption{
-      GHC baseline \vs late lambda lifting
-    }
-  \end{figure}
-\end{frame}
- 
-\begin{frame}[fragile]{Evaluation -- Closure Growth Heuristic}
-  \begin{figure}[t]
-    \centering
-    \begin{tabular}{lrr}
-      \toprule
-      Program & \multicolumn{1}{c}{Bytes allocated} & \multicolumn{1}{c}{Runtime} \\
-      \midrule
-\progname{eliza} & -2.6\% & +2.4\%\\
-\progname{grep} & -7.2\% & -3.1\%\\
-\progname{integrate} & +0.4\% & +4.1\%\\
-\progname{lift} & -4.1\% & -2.5\%\\
-\progname{paraffins} & +17.0\% & +3.7\%\\
-\progname{prolog} & -5.1\% & -2.8\%\\
-\progname{wheel-sieve1} & +31.4\% & +3.2\%\\
-\andmore{98} & & \\
-\midrule
-\totalname{Min} & -7.2\% & -3.1\%\\
-\totalname{Max} & +31.4\% & +4.8\%\\
-\totalname{Geometric Mean} & +0.4\% & -0.0\%\\
-    \end{tabular}
-    \caption{
-      Late lambda lifting with \vs without closure growth heuristic
-    }
-  \end{figure}
-\end{frame}
-  
- 
-\begin{frame}[fragile]{Syntax}
-  \begin{figure}[t]
-  \begin{alignat*}{6}
-  \text{Variables} &\quad& f,g,x,y &\in \var &&&&&\quad& \\
-  \text{Expressions} && e &\in \expr && {}\Coloneqq{} && x && \text{Variable} \\
-              &&&&   & \mathwithin{{}\Coloneqq{}}{\mid} && f\; \overline{x} && \text{Function call} \\
-              &&&&   & \mathwithin{{}\Coloneqq{}}{\mid} && \mkLetb{b}{e} && \text{Recursive \keyword{let}} \\
-  \text{Bindings} && b &\in \bindgr && {}\Coloneqq{} && \overline{f \mathrel{=} r} && \\
-  \text{Right-hand sides} && r &\in \rhs && {}\Coloneqq{} && \lambda \mskip1.5mu \overline{x} \to e && \\
-  \text{Programs} && p &\in \prog && {}\Coloneqq{} && \overline{f\; \overline{x} = e;}\; e' && \\
-  \end{alignat*}
-  \caption{An STG-like untyped lambda calculus}
-  \end{figure}
-\end{frame}
-
-\begin{frame}[fragile]{Formally Estimating Closure Growth}
-  \scalebox{0.7}{%
-    \begin{minipage}{\textwidth}
-    \begin{gather*}
-    \boxed{\cg^{\,\mathunderscore}_{\,\mathunderscore}(\mathunderscore) \colon \mathcal{P}(\var) \to \mathcal{P}(\var) \to \expr \to \zinf} \\
-    \cg^{\added}_{\removed}(x) = 0 \qquad \cg^{\added}_{\removed}(f\; \overline{x}) = 0 \\
-    \cg^{\added}_{\removed}(\mkLetb{bs}{e}) = \cgb^{\added}_{\removed}(bs) + \cg^{\added}_{\removed}(e)
-    \\
-    \boxed{\cgb^{\,\mathunderscore}_{\,\mathunderscore}(\mathunderscore) \colon \mathcal{P}(\var) \to \mathcal{P}(\var) \to \bindgr \to \zinf} \\
-    \cgb^{\added}_{\removed}(\mkBindr{f}{r}) = \sum_i \growth_i + \cgr^{\added}_{\removed}(r_i) \qquad \nu_i = \card{\fvs(\idf_i) \cap \removed} \\
-    \growth_i =
-      \begin{cases}
-        \card{\added \setminus \fvs(\idf_i)} - \nu_i, & \text{if $\nu_i > 0$} \\
-        0, & \text{otherwise}
-      \end{cases}
-    \\
-    \boxed{\cgr^{\,\mathunderscore}_{\,\mathunderscore}(\mathunderscore) \colon \mathcal{P}(\var) \to \mathcal{P}(\var) \to \rhs \to \zinf} \\
-    \cgr^{\added}_{\removed}(\mkRhs{\overline{x}}{e}) = \cg^{\added}_{\removed}(e) * [\sigma, \tau]
-    \qquad
-    n * [\sigma, \tau]  =
-      \begin{cases}
-        n * \sigma, & n < 0 \\
-        n * \tau,   & \text{otherwise} \\
-      \end{cases} \\
-    \sigma  =
-      \begin{cases}
-        1, & \text{$e$ entered at least once} \\
-        0, & \text{otherwise} \\
-      \end{cases}
-    \qquad
-    \tau  =
-      \begin{cases}
-        0, & \text{$e$ never entered} \\
-        1, & \text{$e$ entered at most once} \\
-        1, & \text{RHS bound to a thunk} \\
-        \infty, & \text{otherwise} \\
-      \end{cases} \\
-    \end{gather*}
-    \end{minipage}
-  }
-\end{frame}
-
-\begin{frame}[fragile]{Using Closure Growth}
-  Allow to lift $\mkLetr{\idg}{\overline{\idx}}{\ide}{\ide'}$ when
-\[
-\cg^{\absids'(\idg_1)}_{\{\overline{\idg}\}}(\mkLetr{\idg}{\absids'(\idg_1)\,\overline{\idx}}{\ide}{\ide'}) - \sum_i 1 + \card{\fvs(\idg_i)\setminus \{\overline{\idg}\}}
-\]
-
-is non-positive
-\end{frame}
-
-\begin{frame}[fragile]{Lambda Lifting}
-\scalebox{0.6}{%
-\begin{minipage}{\textwidth}
-\begin{mdframed}
-\begin{gather*}
-\boxed{\lift_{\mathunderscore}(\mathunderscore) \colon \expander \to \expr \to \expr} \\
-\lift_\absids(x) =
-  \begin{cases}
-    x,              & x \notin \dom{\absids} \\
-    x\; \absids(x), & \text{otherwise}
-  \end{cases}
-\qquad\quad
-\lift_\absids(f\; \overline{x}) = \lift_\absids(f)\; \overline{x} \\
-\lift_\absids(\mkLetb{bs}{e}) =
-  \begin{cases}
-    \lift_{\absids'}(e), & \text{$bs$ is to be lifted as $\liftb_{\absids'}(bs)$} \\
-    \mkLetb{\liftb_{\absids}(bs)}{\lift_{\absids}(e)} & \text{otherwise} \\
-  \end{cases} \\
-where\hspace{20em}\\
-\absids' = \addrqs(bs, \absids)\hspace{10em} \\
-\boxed{\addrqs(\mathunderscore, \mathunderscore) \colon \bindgr \to \expander \to \expander} \\
-\addrqs(\mkBindr{f}{r}, \absids) = \absids\left[\overline{f \mapsto \rqs}\right] \\
-where\hspace{8em}\\
-\hspace{5em} \rqs = \bigcup_i \expand_\absids(\fvs(r_i)) \setminus \{\overline{f}\} \\
-\boxed{\expand_{\mathunderscore}(\mathunderscore) \colon \expander \to \mathcal{P}(\var) \to \mathcal{P}(\var)} \\
-\expand_\absids(V) = \bigcup_{x \in V}
-  \begin{cases}
-    \{x\},      & x \notin \dom{\absids} \\
-    \absids(x), & \text{otherwise}
-  \end{cases} \\
-\boxed{\liftb_{\mathunderscore}(\mathunderscore) \colon \expander \to \bindgr \to \bindgr} \\
-\liftb_\absids(\mkBindr{f}{\mkRhs{\overline{x}}{e}}) =
-  \begin{cases}
-	\mkBindr{f}{\mkRhs{\overline{x}}{\lift_\absids(e)}} & f_1 \notin \dom \absids \\
-	\mkBindr{f}{\mkRhs{\absids(f)\,\overline{x}}{\lift_\absids(e)}} & \text{otherwise} \\
-  \end{cases} \\
-\end{gather*}
-\end{mdframed}
-\end{minipage}
-}
-\end{frame}
-
-\begin{frame}[fragile]{Filler}
+\begin{frame}[fragile]{Other Possible Topics}
+  \begin{itemize}
+    \item Reliable Constructor Specialisation for functions/lambdas
+      \begin{itemize}
+        \item Zero-overhead \hs{concat} in Stream Fusion!
+      \end{itemize}
+    \item Pattern-match Checking
+    \item Backend work?
+    \item Frontend work?
+  \end{itemize}
 \end{frame}
 
 \end{document}
