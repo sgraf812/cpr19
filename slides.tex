@@ -218,9 +218,8 @@
         \begin{haskell}
           facIO :: Int -> World -> (World, Int)
           facIO 1 s = (s, 1)
-          facIO n s =
-            let (s', m) = facIO (n-1) s in
-            (s', n * m)
+          facIO n s = case facIO (n-1) s of
+            (s', m) -> (s', n * m)
         \end{haskell}
         \onslide<3>
         \begin{haskell*}{escapeinside=||}
