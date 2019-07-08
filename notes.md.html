@@ -2,24 +2,54 @@
 
 Selective Lambda Lifting
 
-# Motivation
+# Title
 
-- What is lambda lifting?
-- Consider Haskell Code
-- LL will turn local function definitions into top-level ones, turning free variables into parameters
-- former free variables are additional arguments at call sites
-- Lambda lifting is famous as a code generation strategy for functional languages
-- But GHC currently does closure conversion, allocates a closure for g closing over a
-- Sometimes it's beneficial to do LL instead, as this example demonstrates (non-allocating), 50% speedup
-- Also examples that get substantially slower, like the following  
-  - Thunk for h, closes over g and n
-  - Lambda lifting gets rid of closure environment for g
-  - But h now closes over a b and n, so grew by one word
-  - Worse: g closure allocated once, but h closure allocated multiple times
-  - 10% slowdown
-- On Simon's wish list for quite some time
-- So I went ahead and implemented it
-- Goal of paper: work out when a lambda lift is beneficial
+- Working topic for my internship: Nested CPR
+- Long history, Joachim worked on it in 2014 when he was an intern
+- Never made it into GHC HEAD because of complexity and unclear performance implications
+
+# CPR -- Motivation
+
+- HAskell programs allcoate like crazy
+- Like JAva's Integer, Haskell's Ints are boxed (and lifted!)
+- Unfold defs of * and - to see that
+- recursive case: we return a heap-allocated box only to immediately unwrap and discard it again
+- prefer the following form with auxiliary function (worker) and a wrapper
+- worker/wrapper transform yields better form
+
+# worker/wrapper
+
+- Generally quite simple: Wrap original body in case expression, replacing outer product type constructor by unboxed tuple -> worker
+- In the wrapper, call worker and seemingly reverse the transformation, reintroducing the box
+- Wrapper inlines at call sites and offers 'custom calling convention', highly likely that box cancels away with use site
+- In the example, we perform case-of-case, then case-of-known constructor
+- Then we inline the now non-recursive and small fac. Immediately see that case-of-known-constructor is applicable and cancel away another box
+- WW can also exploit strictness information, so that we finally arrive at the previous program 
+- Always sound
+
+# beneficial?
+
+- Only beneficial when it has the CPR property, i.e., when the outer case entirely cancels away.
+- Example where that is not the case
+- Supplying a Lit and the using the *boxed* result of eval (like when mapping to a [Int]) results in an increase in allocations
+- PAthological example
+- Pretty straight-forward abstract interpretation
+
+# Nested CPR -- Motivation
+
+- A common scheme is some recursive computation in IO
+- Example lifts fac into IO
+- PErforming CPR leaves behind an unpleasant boxed Int
+- But the second component obiously has CPR property!
+- We'd much rather like the second version here
+- Welcome to nested CPR
+
+# When to apply this
+
+- There are some additional complications compared to the non-nested case
+- Unwrapping more than one constructor can change strictness properties of function
+- One might be tempted to transform f to f', but that is unsound
+- Similar, but different is the speculative aspect
 
 # Closure conversion vs. Lambda lifting
 
