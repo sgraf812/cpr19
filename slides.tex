@@ -1,7 +1,7 @@
 \documentclass{haskellbeamer}
 
 \title{Nested CPR}
-\subtitle{How to Keep an MR Intern Busy}
+\subtitle{How to Keep a MR Intern Busy}
 \date{8 July 2019}
 
 \bibliography{bibliography.bib}
@@ -95,6 +95,10 @@
         \onslide<3>
         \begin{haskell}
           fac :: Int -> Int
+          fac (I# n) = I# (facw n)
+          facw n = case n of
+            1# -> 1#
+            _  -> n *# facw (n -# 1#)
         \end{haskell}
       \end{overprint}
     \end{minipage}
@@ -136,8 +140,7 @@
         \begin{haskell*}{escapeinside=||}
           fac n = I# (facw n)
           facw (I# n) = case n of
-            1# ->
-              |\colorbox{red}{case}| I# 1# |\colorbox{red}{of I# res -> res}|
+            1# -> |\colorbox{red}{case}| I# 1# |\colorbox{red}{of I# res -> res}|
             _  -> case fac (I# (n -# 1#)) of
               I# m ->  |\colorbox{red}{case}| I# (n *# m) |\colorbox{red}{of}|
                 |\colorbox{red}{I# res -> res}|
@@ -148,21 +151,21 @@
           facw (I# n) = case n of
             1# -> 1#
             _  -> case fac (I# (n -# 1#)) of
-              I# m -> (n *# m)
+              I# m -> n *# m
         \end{haskell}
         \onslide<6>
         \begin{haskell}
           fac n = I# (facw n)
           facw (I# n) = case n of
             1# -> 1#
-            _  -> facw (I# (n -# 1#))
+            _  -> n *# facw (I# (n -# 1#))
         \end{haskell}
         \onslide<7>
         \begin{haskell}
           fac (I# n) = I# (facw n)
           facw n = case n of
             1# -> 1#
-            _  -> facw (n -# 1#)
+            _  -> n *# facw (n -# 1#)
         \end{haskell}
       \end{overprint}
     \end{minipage}
@@ -275,9 +278,9 @@
             f x = (x-1, x+1)
             
             f' :: Int -> (Int, Int)
-            f' (I# x) = case f'w x of
+            f' x = case f'w x of
               (# a, b #) -> (I# a, I# b)
-            f'w x = (# x -# 1#, x +# 1# #)
+            f'w (I# x) = (# x -# 1#, x +# 1# #)
           \end{haskell}
           \onslide<3>
           \begin{haskell*}{escapeinside=||}
@@ -285,9 +288,9 @@
             f x = (x-1, x+1)
             
             f' :: Int -> (Int, Int)
-            f' (I# x) = case f'w x of
+            f' x = case f'w x of
               (# a, b #) -> (I# a, I# b)
-            f'w x = (# x -# 1#, x +# 1# #)
+            f'w (I# x) = (# x -# 1#, x +# 1# #)
 
             > f (error |\PYG{l+s}{\PYGZdq{}}\PYG{l+s}{\includegraphics[width=3.85mm]{bomb.png}}\PYG{l+s}{\PYGZdq{}}|) `seq` ()
             ()
@@ -299,9 +302,11 @@
             f :: Int -> (Int, Int)
             f x = x `seq` (x-1, g x)
 
-            g :: Int -> Int
-            g n = 0
-            g n = n + g (n-1)
+
+
+            g  :: Int -> Int
+            g  n = 0
+            g  n = n + g (n-1)
           \end{haskell}
           \onslide<5>
           \begin{haskell*}{escapeinside=||}
@@ -311,8 +316,8 @@
             fw x = (# x -# 1#, gw x #)
 
             gw :: Int# -> Int#
-            g n = 0#
-            g n = n +# g (n -# 1#)
+            gw n = 0#
+            gw n = n +# g (n -# 1#)
           \end{haskell*}
           \onslide<6>
           \begin{haskell*}{escapeinside=||}
@@ -322,8 +327,8 @@
             fw x = (# x -# 1#, gw x #)
 
             gw :: Int# -> Int#
-            g n = 0#
-            g n = n +# g (n -# 1#)
+            gw n = 0#
+            gw n = n +# g (n -# 1#)
 
             > sum $ map (fst . f) [0..1000000]
             |\PYG{l+s}{\includegraphics[width=3.85mm]{hourglass.pdf}}|
@@ -375,6 +380,49 @@
         sum $ map (eval . Lit) [1..1000000]
       \end{haskell}
       $\Longrightarrow$ \enquote{Return-pattern specialisation}
+    \end{overprint}
+  \end{center}
+\end{frame}
+
+\begin{frame}[fragile]{Return Pattern Specialisation vs. Nested CPR}
+  \begin{center}
+    \begin{overprint}
+      \onslide<1>
+      \begin{haskell}
+        facIO :: Int -> IO Int
+        facIO 1 = pure 1
+        facIO n = do
+          m <- facIO (n-1)
+          pure (n * m)
+
+        main = facIO 1000 >>= print
+      \end{haskell}
+      \onslide<2>
+      \begin{haskell}
+        facIO :: Int -> World -> (World, Int)
+        facIO 1 s = (s, 1)
+        facIO n s = case facIO (n-1) s of
+          (s', m) -> (s', n * m)
+
+
+        main s = case facIO 1000 s of
+          (s', I# n) -> printw n s'
+      \end{haskell}
+      \onslide<3>
+      \begin{haskell}
+        facIO :: Int -> World -> (World, Int)
+        facIO 1 s = (s, 1)
+        facIO n s = case facIO (n-1) s of
+          (s', m) -> (s', n * m)
+
+        facIO_ub :: Int# -> World -> (# World, Int# #)
+        facIO_ub 1# s = (# s, 1# #)
+        facIO_ub n s = case facIO_ub (n -# 1#) s of
+          (# s', m #) -> (# s', n *# m #)
+
+        main s = case facIO_ub 1000 s of
+          (# s', n #) -> printw n s'
+      \end{haskell}
     \end{overprint}
   \end{center}
 \end{frame}
